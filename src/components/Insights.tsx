@@ -1,5 +1,5 @@
 import React from 'react';
-import { Note } from '../types/db';
+import type { Note } from '../types/db';
 import { Sparkles, Download } from 'lucide-react';
 import { exportNoteAsMarkdown, exportFlashcardsAsCsv } from '../lib/export';
 

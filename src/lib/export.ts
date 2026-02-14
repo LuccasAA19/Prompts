@@ -1,4 +1,4 @@
-import { Note } from '../types/db';
+import type { Note } from '../types/db';
 import Papa from 'papaparse';
 
 /**

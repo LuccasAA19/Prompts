@@ -1,6 +1,6 @@
 import React from 'react';
-import { Note, NoteCategory } from '../types/db';
-import { PlusCircle, Search } from 'lucide-react';
+import type { Note, NoteCategory } from '../types/db';
+import { PlusCircle, Search, FileText } from 'lucide-react';
 
 const CATEGORIES: NoteCategory[] = ['clinico', 'estudo', 'startup', 'pessoal', 'outro'];
 
@@ -14,6 +14,7 @@ interface SidebarProps {
   allTags: string[];
   selectedCategory: NoteCategory | null;
   onSelectCategory: (category: NoteCategory | null) => void;
+  onSwitchView: () => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = (props) => {
@@ -26,15 +27,26 @@ const Sidebar: React.FC<SidebarProps> = (props) => {
     onSearchChange,
     selectedCategory,
     onSelectCategory,
+    onSwitchView,
   } = props;
 
   return (
     <aside className="w-80 p-4 border-r bg-gray-50 h-screen flex flex-col">
       <div className="flex justify-between items-center mb-4">
         <h1 className="text-2xl font-bold">NeuroNotes+</h1>
-        <button onClick={onCreateNewNote} className="text-gray-600 hover:text-black">
-          <PlusCircle size={24} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onSwitchView}
+            className="flex items-center gap-1 text-sm text-gray-600 hover:text-black px-2 py-1 rounded hover:bg-gray-200"
+            title="Leitor de PDFs"
+          >
+            <FileText size={16} />
+            PDFs
+          </button>
+          <button onClick={onCreateNewNote} className="text-gray-600 hover:text-black">
+            <PlusCircle size={24} />
+          </button>
+        </div>
       </div>
 
       <div className="relative mb-4">
