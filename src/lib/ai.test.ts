@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runAIPipeline, flashcardMaker } from './ai';
-import { Note, NoteCategory } from '../types/db';
+import { runAIPipeline } from './ai';
+import type { Note } from '../types/db';
 
 describe('Simulated AI Pipeline', () => {
 

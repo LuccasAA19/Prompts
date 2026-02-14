@@ -1,4 +1,4 @@
-import { Note, NoteCategory, Flashcard } from '../types/db';
+import type { Note, NoteCategory, Flashcard } from '../types/db';
 
 // --- Simulated AI Nodes ---
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Note } from '../types/db';
+import type { Note } from '../types/db';
 import { useDebounce } from '../hooks/useDebounce';
 
 interface EditorProps {

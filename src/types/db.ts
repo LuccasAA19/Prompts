@@ -18,3 +18,33 @@ export type Note = {
   summary: string[];
   flashcards: Flashcard[];
 };
+
+// PDF Voice Reader types
+
+export type PdfPage = {
+  pageNumber: number;
+  text: string;
+};
+
+export type PdfDocument = {
+  id?: number;
+  fileName: string;
+  fileSize: number;
+  pageCount: number;
+  pages: PdfPage[];
+  importedAt: string;
+  lastReadPage: number;
+  lastReadPosition: number;
+};
+
+export type TTSVoice = {
+  id: string;
+  name: string;
+  language: string;
+  gender: string;
+};
+
+export type TTSSettings = {
+  voiceId: string;
+  speed: number;
+};

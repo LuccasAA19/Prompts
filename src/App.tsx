@@ -1,16 +1,26 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from './db/dexie';
-import { Note, NoteCategory } from './types/db';
+import type { Note, NoteCategory } from './types/db';
 import { runAIPipeline } from './lib/ai';
 import Sidebar from './components/Sidebar';
 import Editor from './components/Editor';
 import Insights from './components/Insights';
+import PdfSidebar from './components/PdfSidebar';
+import PdfReader from './components/PdfReader';
+
+type AppView = 'notes' | 'pdfs';
 
 function App() {
+  const [view, setView] = useState<AppView>('notes');
+
+  // --- Notes state ---
   const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<NoteCategory | null>(null);
+
+  // --- PDF state ---
+  const [activePdfId, setActivePdfId] = useState<number | null>(null);
 
   const notes = useLiveQuery(() => {
     const lowerCaseQuery = searchQuery.toLowerCase();
@@ -34,10 +44,13 @@ function App() {
 
   const allTags = useLiveQuery(() => db.notes.toArray(), [], [])
     ?.flatMap(note => note.tags)
-    .filter((tag, index, self) => self.indexOf(tag) === index) // Unique tags
+    .filter((tag, index, self) => self.indexOf(tag) === index)
     .sort() || [];
 
+  const pdfs = useLiveQuery(() => db.pdfs.orderBy('importedAt').reverse().toArray()) ?? [];
+
   const activeNote = notes?.find((note) => note.id === activeNoteId);
+  const activePdf = pdfs.find((pdf) => pdf.id === activePdfId);
 
   const createNewNote = async () => {
     const newNote: Note = {
@@ -82,27 +95,57 @@ function App() {
     });
   };
 
+  const handleDeletePdf = async (id: number) => {
+    await db.pdfs.delete(id);
+    if (activePdfId === id) setActivePdfId(null);
+  };
+
   return (
     <div className="flex h-screen bg-white">
-      <Sidebar
-        notes={notes || []}
-        activeNoteId={activeNoteId}
-        onSelectNote={setActiveNoteId}
-        onCreateNewNote={createNewNote}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        allTags={allTags}
-        selectedCategory={filterCategory}
-        onSelectCategory={setFilterCategory}
-      />
-      <Editor
-        note={activeNote}
-        onUpdateNote={handleNoteUpdate}
-      />
-      <Insights
-        note={activeNote}
-        onGenerateFlashcards={handleGenerateFlashcards}
-      />
+      {view === 'notes' ? (
+        <>
+          <Sidebar
+            notes={notes || []}
+            activeNoteId={activeNoteId}
+            onSelectNote={setActiveNoteId}
+            onCreateNewNote={createNewNote}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            allTags={allTags}
+            selectedCategory={filterCategory}
+            onSelectCategory={setFilterCategory}
+            onSwitchView={() => setView('pdfs')}
+          />
+          <Editor
+            note={activeNote}
+            onUpdateNote={handleNoteUpdate}
+          />
+          <Insights
+            note={activeNote}
+            onGenerateFlashcards={handleGenerateFlashcards}
+          />
+        </>
+      ) : (
+        <>
+          <PdfSidebar
+            pdfs={pdfs}
+            activePdfId={activePdfId}
+            onSelectPdf={setActivePdfId}
+            onDeletePdf={handleDeletePdf}
+            onSwitchView={() => setView('notes')}
+          />
+          {activePdf ? (
+            <PdfReader pdf={activePdf} />
+          ) : (
+            <main className="flex-1 flex items-center justify-center text-gray-500">
+              <div className="text-center">
+                <p className="text-lg mb-1">Selecione um PDF ou importe um novo</p>
+                <p className="text-sm text-gray-400">Use o painel lateral para gerenciar seus PDFs</p>
+              </div>
+            </main>
+          )}
+        </>
+      )}
     </div>
   );
 }
