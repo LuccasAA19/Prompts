@@ -1,242 +1,232 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { loadTTS, generateAudioForText, splitTextIntoChunks } from '../lib/tts';
-import type { KokoroTTS } from 'kokoro-js';
+import {
+  loadVoices,
+  getBestVoiceForLang,
+  splitIntoSentences,
+  isTTSSupported,
+} from '../lib/tts';
 
-export type TTSStatus = 'idle' | 'loading-model' | 'generating' | 'playing' | 'paused';
-
-interface UseTTSOptions {
-  voice?: string;
-  speed?: number;
-}
+export type TTSStatus = 'idle' | 'loading-voices' | 'playing' | 'paused';
 
 interface UseTTSReturn {
   status: TTSStatus;
-  currentTime: number;
-  duration: number;
-  modelProgress: number;
-  play: (text: string) => Promise<void>;
+  currentChunk: number;
+  totalChunks: number;
+  voices: SpeechSynthesisVoice[];
+  voice: string;
+  speed: number;
+  play: (text: string) => void;
   pause: () => void;
   resume: () => void;
   stop: () => void;
-  seekForward: (seconds: number) => void;
-  seekBackward: (seconds: number) => void;
-  setVoice: (voiceId: string) => void;
+  skipForward: () => void;
+  skipBackward: () => void;
+  setVoice: (voiceURI: string) => void;
   setSpeed: (speed: number) => void;
-  voice: string;
-  speed: number;
 }
 
-export function useTTS(options?: UseTTSOptions): UseTTSReturn {
+export function useTTS(): UseTTSReturn {
   const [status, setStatus] = useState<TTSStatus>('idle');
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [modelProgress, setModelProgress] = useState(0);
-  const [voice, setVoice] = useState(options?.voice ?? 'af_heart');
-  const [speed, setSpeed] = useState(options?.speed ?? 1);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voice, setVoiceState] = useState('');
+  const [speed, setSpeedState] = useState(1);
+  const [currentChunk, setCurrentChunk] = useState(0);
+  const [totalChunks, setTotalChunks] = useState(0);
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
-  const audioBufferRef = useRef<AudioBuffer | null>(null);
-  const startTimeRef = useRef(0);
-  const pauseOffsetRef = useRef(0);
-  const animFrameRef = useRef<number>(0);
-  const ttsRef = useRef<KokoroTTS | null>(null);
+  // Refs hold mutable state that callbacks need without causing stale closures.
+  const chunksRef = useRef<string[]>([]);
+  const chunkIndexRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  const voiceRef = useRef('');
+  const speedRef = useRef(1);
 
-  const cleanup = useCallback(() => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
+  // "Latest callback" ref pattern — updated on every render so callbacks
+  // always call the most recent version of speakChunk.
+  const speakChunkRef = useRef<(index: number) => void>(() => {});
+
+  // Keep voice/speed refs in sync with state.
+  useEffect(() => {
+    voiceRef.current = voice;
+  }, [voice]);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+
+  // Load voices once on mount.
+  useEffect(() => {
+    if (!isTTSSupported()) return;
+
+    setStatus('loading-voices');
+    loadVoices().then((loaded) => {
+      setVoices(loaded);
+      // Auto-select best Portuguese voice, then English, then whatever is first.
+      const best =
+        getBestVoiceForLang(loaded, 'pt-BR') ??
+        getBestVoiceForLang(loaded, 'pt') ??
+        getBestVoiceForLang(loaded, 'en-US') ??
+        loaded[0] ??
+        null;
+      if (best) {
+        setVoiceState(best.voiceURI);
+        voiceRef.current = best.voiceURI;
+      }
+      setStatus('idle');
+    });
+
+    return () => {
+      window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  // Speak a single chunk by index; chain to the next when done.
+  // Defined as an inline function so it always closes over the latest refs.
+  const speakChunkImpl = (index: number): void => {
+    if (!isPlayingRef.current) return;
+
+    if (index >= chunksRef.current.length) {
+      // Finished all chunks.
+      isPlayingRef.current = false;
+      setStatus('idle');
+      setCurrentChunk(0);
+      chunkIndexRef.current = 0;
+      return;
     }
-    if (sourceNodeRef.current) {
-      try { sourceNodeRef.current.stop(); } catch { /* already stopped */ }
-      sourceNodeRef.current.disconnect();
-      sourceNodeRef.current = null;
+
+    chunkIndexRef.current = index;
+    setCurrentChunk(index);
+
+    const text = chunksRef.current[index];
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    // Apply the currently selected voice.
+    const allVoices = window.speechSynthesis.getVoices();
+    const selectedVoice = allVoices.find((v) => v.voiceURI === voiceRef.current);
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang;
+    }
+    utterance.rate = speedRef.current;
+
+    utterance.onend = () => {
+      speakChunkRef.current(index + 1);
+    };
+
+    utterance.onerror = (e) => {
+      // 'interrupted' / 'canceled' means the user paused/stopped — not an error.
+      if (e.error === 'interrupted' || e.error === 'canceled') return;
+      console.warn('TTS error on chunk', index, ':', e.error);
+      speakChunkRef.current(index + 1);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Keep the ref pointing to the latest implementation.
+  speakChunkRef.current = speakChunkImpl;
+
+  const play = useCallback((text: string) => {
+    window.speechSynthesis.cancel();
+
+    const sentences = splitIntoSentences(text);
+    chunksRef.current = sentences;
+    chunkIndexRef.current = 0;
+    isPlayingRef.current = true;
+
+    setTotalChunks(sentences.length);
+    setCurrentChunk(0);
+    setStatus('playing');
+
+    speakChunkRef.current(0);
+  }, []);
+
+  // Pause: cancel current speech but remember position.
+  const pause = useCallback(() => {
+    isPlayingRef.current = false;
+    window.speechSynthesis.cancel();
+    setStatus('paused');
+  }, []);
+
+  // Resume from the saved chunk index.
+  const resume = useCallback(() => {
+    isPlayingRef.current = true;
+    setStatus('playing');
+    speakChunkRef.current(chunkIndexRef.current);
+  }, []);
+
+  const stop = useCallback(() => {
+    isPlayingRef.current = false;
+    window.speechSynthesis.cancel();
+    chunksRef.current = [];
+    chunkIndexRef.current = 0;
+    setCurrentChunk(0);
+    setTotalChunks(0);
+    setStatus('idle');
+  }, []);
+
+  // Jump forward/backward by 5 sentences.
+  const skipForward = useCallback(() => {
+    const next = Math.min(
+      chunkIndexRef.current + 5,
+      Math.max(0, chunksRef.current.length - 1)
+    );
+    window.speechSynthesis.cancel();
+    chunkIndexRef.current = next;
+    setCurrentChunk(next);
+    if (isPlayingRef.current) {
+      speakChunkRef.current(next);
     }
   }, []);
 
-  useEffect(() => {
-    return () => {
-      cleanup();
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-    };
-  }, [cleanup]);
-
-  const updateTime = useCallback(() => {
-    if (audioContextRef.current && status === 'playing') {
-      const elapsed = audioContextRef.current.currentTime - startTimeRef.current + pauseOffsetRef.current;
-      setCurrentTime(Math.min(elapsed, duration));
-      if (elapsed < duration) {
-        animFrameRef.current = requestAnimationFrame(updateTime);
-      } else {
-        setStatus('idle');
-        setCurrentTime(0);
-        pauseOffsetRef.current = 0;
-      }
+  const skipBackward = useCallback(() => {
+    const prev = Math.max(chunkIndexRef.current - 5, 0);
+    window.speechSynthesis.cancel();
+    chunkIndexRef.current = prev;
+    setCurrentChunk(prev);
+    if (isPlayingRef.current) {
+      speakChunkRef.current(prev);
     }
-  }, [status, duration]);
+  }, []);
 
-  useEffect(() => {
-    if (status === 'playing') {
-      animFrameRef.current = requestAnimationFrame(updateTime);
+  const setVoice = useCallback((voiceURI: string) => {
+    setVoiceState(voiceURI);
+    voiceRef.current = voiceURI;
+    if (isPlayingRef.current) {
+      // Restart current chunk with the new voice.
+      const idx = chunkIndexRef.current;
+      window.speechSynthesis.cancel();
+      setTimeout(() => {
+        if (isPlayingRef.current) speakChunkRef.current(idx);
+      }, 50);
     }
-    return () => {
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    };
-  }, [status, updateTime]);
+  }, []);
 
-  const playBuffer = useCallback((buffer: AudioBuffer, offset: number = 0) => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+  const setSpeed = useCallback((newSpeed: number) => {
+    setSpeedState(newSpeed);
+    speedRef.current = newSpeed;
+    if (isPlayingRef.current) {
+      // Restart current chunk at the new rate.
+      const idx = chunkIndexRef.current;
+      window.speechSynthesis.cancel();
+      setTimeout(() => {
+        if (isPlayingRef.current) speakChunkRef.current(idx);
+      }, 50);
     }
-    const ctx = audioContextRef.current;
-
-    cleanup();
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      const elapsed = ctx.currentTime - startTimeRef.current + pauseOffsetRef.current;
-      if (elapsed >= duration - 0.1) {
-        setStatus('idle');
-        setCurrentTime(0);
-        pauseOffsetRef.current = 0;
-      }
-    };
-
-    startTimeRef.current = ctx.currentTime;
-    pauseOffsetRef.current = offset;
-    source.start(0, offset);
-    sourceNodeRef.current = source;
-    setStatus('playing');
-  }, [cleanup, duration]);
-
-  const play = useCallback(async (text: string) => {
-    try {
-      // Load model if needed
-      if (!ttsRef.current) {
-        setStatus('loading-model');
-        ttsRef.current = await loadTTS((progress) => {
-          if (progress.progress !== undefined) {
-            setModelProgress(Math.round(progress.progress));
-          }
-        });
-        setModelProgress(100);
-      }
-
-      setStatus('generating');
-      const chunks = splitTextIntoChunks(text);
-      const allSamples: Float32Array[] = [];
-
-      for (const chunk of chunks) {
-        if (chunk.trim().length === 0) continue;
-        const samples = await generateAudioForText(ttsRef.current, chunk, voice, speed);
-        allSamples.push(samples);
-      }
-
-      // Concatenate all samples
-      const totalLength = allSamples.reduce((sum, s) => sum + s.length, 0);
-      const combined = new Float32Array(totalLength);
-      let offset = 0;
-      for (const samples of allSamples) {
-        combined.set(samples, offset);
-        offset += samples.length;
-      }
-
-      // Create audio buffer
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
-      }
-      const buffer = audioContextRef.current.createBuffer(1, combined.length, 24000);
-      buffer.copyToChannel(combined, 0);
-      audioBufferRef.current = buffer;
-
-      const dur = combined.length / 24000;
-      setDuration(dur);
-      pauseOffsetRef.current = 0;
-
-      // Need to play after duration is set
-      const ctx = audioContextRef.current;
-      cleanup();
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      source.onended = () => {
-        const elapsed = ctx.currentTime - startTimeRef.current;
-        if (elapsed >= dur - 0.1) {
-          setStatus('idle');
-          setCurrentTime(0);
-          pauseOffsetRef.current = 0;
-        }
-      };
-      startTimeRef.current = ctx.currentTime;
-      source.start(0, 0);
-      sourceNodeRef.current = source;
-      setStatus('playing');
-    } catch (err) {
-      console.error('TTS error:', err);
-      setStatus('idle');
-    }
-  }, [voice, speed, cleanup]);
-
-  const pause = useCallback(() => {
-    if (status !== 'playing' || !audioContextRef.current) return;
-    const elapsed = audioContextRef.current.currentTime - startTimeRef.current + pauseOffsetRef.current;
-    pauseOffsetRef.current = elapsed;
-    cleanup();
-    setStatus('paused');
-  }, [status, cleanup]);
-
-  const resume = useCallback(() => {
-    if (status !== 'paused' || !audioBufferRef.current) return;
-    playBuffer(audioBufferRef.current, pauseOffsetRef.current);
-  }, [status, playBuffer]);
-
-  const stop = useCallback(() => {
-    cleanup();
-    pauseOffsetRef.current = 0;
-    setCurrentTime(0);
-    setStatus('idle');
-  }, [cleanup]);
-
-  const seekForward = useCallback((seconds: number) => {
-    if (!audioBufferRef.current || (status !== 'playing' && status !== 'paused')) return;
-    let newOffset: number;
-    if (status === 'playing' && audioContextRef.current) {
-      newOffset = audioContextRef.current.currentTime - startTimeRef.current + pauseOffsetRef.current + seconds;
-    } else {
-      newOffset = pauseOffsetRef.current + seconds;
-    }
-    newOffset = Math.min(newOffset, duration);
-    newOffset = Math.max(newOffset, 0);
-
-    if (status === 'playing') {
-      playBuffer(audioBufferRef.current, newOffset);
-    } else {
-      pauseOffsetRef.current = newOffset;
-      setCurrentTime(newOffset);
-    }
-  }, [status, duration, playBuffer]);
-
-  const seekBackward = useCallback((seconds: number) => {
-    seekForward(-seconds);
-  }, [seekForward]);
+  }, []);
 
   return {
     status,
-    currentTime,
-    duration,
-    modelProgress,
+    currentChunk,
+    totalChunks,
+    voices,
+    voice,
+    speed,
     play,
     pause,
     resume,
     stop,
-    seekForward,
-    seekBackward,
+    skipForward,
+    skipBackward,
     setVoice,
     setSpeed,
-    voice,
-    speed,
   };
 }

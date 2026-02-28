@@ -1,0 +1,18 @@
+{
+  "name": "NeuroNotes+",
+  "short_name": "NeuroNotes",
+  "description": "Leitor de PDF com voz — local, privado e gratuito",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

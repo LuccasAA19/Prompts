@@ -15,10 +15,6 @@ const PdfReader: React.FC<PdfReaderProps> = ({ pdf }) => {
     return pdf.pages.find((p) => p.pageNumber === currentPage);
   }, [pdf.pages, currentPage]);
 
-  const fullText = useMemo(() => {
-    return pdf.pages.map((p) => p.text).join('\n\n');
-  }, [pdf.pages]);
-
   const goToPage = async (pageNum: number) => {
     if (pageNum < 1 || pageNum > pdf.pageCount) return;
     setCurrentPage(pageNum);
@@ -66,8 +62,8 @@ const PdfReader: React.FC<PdfReaderProps> = ({ pdf }) => {
         </div>
       </div>
 
-      {/* Voice Player */}
-      <VoicePlayer text={fullText} />
+      {/* Voice Player — stops automatically when the page changes */}
+      <VoicePlayer text={page?.text ?? ''} />
     </main>
   );
 };
