@@ -1,13 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Play,
   Pause,
   Square,
-  RotateCcw,
-  RotateCw,
+  SkipBack,
+  SkipForward,
   ChevronDown,
   Volume2,
-  Loader2,
 } from 'lucide-react';
 import { useTTS } from '../hooks/useTTS';
 
@@ -15,34 +14,24 @@ interface VoicePlayerProps {
   text: string;
 }
 
-const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
-
-const VOICE_OPTIONS = [
-  { id: 'af_heart', label: 'Heart (F)', lang: 'EN-US' },
-  { id: 'af_bella', label: 'Bella (F)', lang: 'EN-US' },
-  { id: 'af_nicole', label: 'Nicole (F)', lang: 'EN-US' },
-  { id: 'af_sarah', label: 'Sarah (F)', lang: 'EN-US' },
-  { id: 'am_michael', label: 'Michael (M)', lang: 'EN-US' },
-  { id: 'am_fenrir', label: 'Fenrir (M)', lang: 'EN-US' },
-  { id: 'am_puck', label: 'Puck (M)', lang: 'EN-US' },
-  { id: 'bf_emma', label: 'Emma (F)', lang: 'EN-GB' },
-  { id: 'bm_george', label: 'George (M)', lang: 'EN-GB' },
-  { id: 'pf_dora', label: 'Dora (F)', lang: 'PT' },
-  { id: 'pm_alex', label: 'Alex (M)', lang: 'PT' },
-];
-
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
+const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 
 const VoicePlayer: React.FC<VoicePlayerProps> = ({ text }) => {
   const tts = useTTS();
   const [showSettings, setShowSettings] = useState(false);
 
+  // Keep a stable ref to stop() so the text-change effect never goes stale.
+  const stopRef = useRef(tts.stop);
+  stopRef.current = tts.stop;
+
+  // Stop playback whenever the page changes (text prop changes).
+  useEffect(() => {
+    stopRef.current();
+  }, [text]);
+
   const handlePlayPause = () => {
     if (tts.status === 'idle') {
+      if (!text.trim()) return;
       tts.play(text);
     } else if (tts.status === 'playing') {
       tts.pause();
@@ -51,55 +40,70 @@ const VoicePlayer: React.FC<VoicePlayerProps> = ({ text }) => {
     }
   };
 
-  const isLoading = tts.status === 'loading-model' || tts.status === 'generating';
+  const progressPercent =
+    tts.totalChunks > 0 ? (tts.currentChunk / tts.totalChunks) * 100 : 0;
+
   const isActive = tts.status === 'playing' || tts.status === 'paused';
-  const progressPercent = tts.duration > 0 ? (tts.currentTime / tts.duration) * 100 : 0;
+  const isLoadingVoices = tts.status === 'loading-voices';
+
+  // Group voices: Portuguese first, English second, others last.
+  const groupedVoices = useMemo(() => {
+    const pt = tts.voices.filter((v) => v.lang.startsWith('pt'));
+    const en = tts.voices.filter((v) => v.lang.startsWith('en'));
+    const other = tts.voices.filter(
+      (v) => !v.lang.startsWith('pt') && !v.lang.startsWith('en')
+    );
+    return { pt, en, other };
+  }, [tts.voices]);
+
+  const selectedVoiceName =
+    tts.voices.find((v) => v.voiceURI === tts.voice)?.name ?? 'Voz';
 
   return (
     <div className="border-t bg-gray-50 shrink-0">
       {/* Progress bar */}
-      <div className="h-1 bg-gray-200 cursor-pointer" title={formatTime(tts.currentTime)}>
+      <div className="h-1.5 bg-gray-200">
         <div
-          className="h-full bg-blue-600 transition-all duration-300"
+          className="h-full bg-blue-600 transition-all duration-500"
           style={{ width: `${progressPercent}%` }}
         />
       </div>
 
-      <div className="px-6 py-3 flex items-center gap-4">
-        {/* Rewind 10s */}
+      {/* Main controls */}
+      <div className="px-3 sm:px-6 py-3 flex items-center gap-2 sm:gap-3">
+        {/* Skip back 5 sentences */}
         <button
-          onClick={() => tts.seekBackward(10)}
+          onClick={tts.skipBackward}
           disabled={!isActive}
           className="p-2 rounded-full hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Retroceder 10s"
+          title="Voltar 5 frases"
         >
-          <RotateCcw size={20} />
+          <SkipBack size={20} />
         </button>
 
         {/* Play / Pause */}
         <button
           onClick={handlePlayPause}
-          disabled={isLoading || !text}
-          className="p-3 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={isLoadingVoices || !text.trim()}
+          className="p-3 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex-none"
+          style={{ minWidth: 48, minHeight: 48 }}
           title={tts.status === 'playing' ? 'Pausar' : 'Reproduzir'}
         >
-          {isLoading ? (
-            <Loader2 size={24} className="animate-spin" />
-          ) : tts.status === 'playing' ? (
-            <Pause size={24} />
+          {tts.status === 'playing' ? (
+            <Pause size={22} />
           ) : (
-            <Play size={24} className="ml-0.5" />
+            <Play size={22} className="ml-0.5" />
           )}
         </button>
 
-        {/* Forward 10s */}
+        {/* Skip forward 5 sentences */}
         <button
-          onClick={() => tts.seekForward(10)}
+          onClick={tts.skipForward}
           disabled={!isActive}
           className="p-2 rounded-full hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Avançar 10s"
+          title="Avançar 5 frases"
         >
-          <RotateCw size={20} />
+          <SkipForward size={20} />
         </button>
 
         {/* Stop */}
@@ -112,46 +116,41 @@ const VoicePlayer: React.FC<VoicePlayerProps> = ({ text }) => {
           <Square size={18} />
         </button>
 
-        {/* Time display */}
-        <span className="text-sm text-gray-500 font-mono min-w-[90px]">
-          {formatTime(tts.currentTime)} / {formatTime(tts.duration)}
-        </span>
-
-        {/* Loading indicator */}
-        {tts.status === 'loading-model' && (
-          <span className="text-xs text-blue-600">
-            Carregando modelo... {tts.modelProgress}%
-          </span>
-        )}
-        {tts.status === 'generating' && (
-          <span className="text-xs text-blue-600">
-            Gerando áudio...
-          </span>
-        )}
-
-        {/* Spacer */}
-        <div className="flex-1" />
+        {/* Status / progress info */}
+        <div className="flex-1 min-w-0">
+          {isLoadingVoices && (
+            <span className="text-xs text-blue-600">Carregando vozes…</span>
+          )}
+          {isActive && (
+            <span className="text-xs text-gray-500 font-mono">
+              {tts.currentChunk + 1}/{tts.totalChunks}
+            </span>
+          )}
+        </div>
 
         {/* Speed selector */}
         <select
           value={tts.speed}
           onChange={(e) => tts.setSpeed(parseFloat(e.target.value))}
-          className="text-sm bg-white border rounded px-2 py-1"
+          className="text-sm bg-white border rounded px-1.5 py-1 flex-none"
           title="Velocidade"
         >
           {SPEED_OPTIONS.map((s) => (
-            <option key={s} value={s}>{s}x</option>
+            <option key={s} value={s}>
+              {s}x
+            </option>
           ))}
         </select>
 
         {/* Voice settings toggle */}
         <button
-          onClick={() => setShowSettings(!showSettings)}
-          className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-200"
+          onClick={() => setShowSettings((v) => !v)}
+          className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 px-2 py-1 rounded hover:bg-gray-200 flex-none"
+          title="Selecionar voz"
         >
           <Volume2 size={16} />
-          <span className="hidden sm:inline">
-            {VOICE_OPTIONS.find((v) => v.id === tts.voice)?.label ?? 'Voz'}
+          <span className="hidden sm:inline max-w-[100px] truncate text-xs">
+            {selectedVoiceName}
           </span>
           <ChevronDown size={14} />
         </button>
@@ -159,27 +158,84 @@ const VoicePlayer: React.FC<VoicePlayerProps> = ({ text }) => {
 
       {/* Voice selection panel */}
       {showSettings && (
-        <div className="px-6 pb-3 border-t pt-3">
-          <p className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wide">Selecionar voz</p>
-          <div className="flex flex-wrap gap-2">
-            {VOICE_OPTIONS.map((v) => (
-              <button
-                key={v.id}
-                onClick={() => { tts.setVoice(v.id); setShowSettings(false); }}
-                className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
-                  tts.voice === v.id
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
-                }`}
-              >
-                {v.label} <span className="text-xs opacity-70">({v.lang})</span>
-              </button>
-            ))}
-          </div>
+        <div className="px-4 sm:px-6 pb-4 border-t pt-3 max-h-52 overflow-y-auto">
+          {tts.voices.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">
+              Nenhuma voz disponível no dispositivo.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <VoiceGroup
+                label="Português"
+                voices={groupedVoices.pt}
+                selected={tts.voice}
+                onSelect={(uri) => {
+                  tts.setVoice(uri);
+                  setShowSettings(false);
+                }}
+              />
+              <VoiceGroup
+                label="Inglês"
+                voices={groupedVoices.en}
+                selected={tts.voice}
+                onSelect={(uri) => {
+                  tts.setVoice(uri);
+                  setShowSettings(false);
+                }}
+              />
+              <VoiceGroup
+                label="Outros"
+                voices={groupedVoices.other}
+                selected={tts.voice}
+                onSelect={(uri) => {
+                  tts.setVoice(uri);
+                  setShowSettings(false);
+                }}
+                showLang
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 };
+
+interface VoiceGroupProps {
+  label: string;
+  voices: SpeechSynthesisVoice[];
+  selected: string;
+  onSelect: (uri: string) => void;
+  showLang?: boolean;
+}
+
+function VoiceGroup({ label, voices, selected, onSelect, showLang }: VoiceGroupProps) {
+  if (voices.length === 0) return null;
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5">
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {voices.map((v) => (
+          <button
+            key={v.voiceURI}
+            onClick={() => onSelect(v.voiceURI)}
+            className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+              selected === v.voiceURI
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+            }`}
+          >
+            {v.name}
+            {showLang && (
+              <span className="opacity-60 ml-1">({v.lang})</span>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default VoicePlayer;

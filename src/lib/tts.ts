@@ -1,82 +1,101 @@
-import { KokoroTTS } from 'kokoro-js';
-import type { TTSVoice } from '../types/db';
+// Text-to-Speech using the browser's built-in Web Speech API.
+// On Android this leverages Google's neural WaveNet voices;
+// on iOS it uses Apple's high-quality neural voices.
+// No model download needed — works instantly, offline, and for free.
 
-const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+export function isTTSSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'speechSynthesis' in window &&
+    'SpeechSynthesisUtterance' in window
+  );
+}
 
-let ttsInstance: KokoroTTS | null = null;
-let loadingPromise: Promise<KokoroTTS> | null = null;
+/** Load the list of voices available on the device. */
+export async function loadVoices(): Promise<SpeechSynthesisVoice[]> {
+  if (!isTTSSupported()) return [];
 
-export async function loadTTS(
-  onProgress?: (progress: { status: string; progress?: number }) => void
-): Promise<KokoroTTS> {
-  if (ttsInstance) return ttsInstance;
-  if (loadingPromise) return loadingPromise;
-
-  loadingPromise = KokoroTTS.from_pretrained(MODEL_ID, {
-    dtype: 'q8',
-    device: 'wasm',
-    progress_callback: onProgress as Parameters<typeof KokoroTTS.from_pretrained>[1] extends { progress_callback?: infer C } ? C : never,
+  return new Promise((resolve) => {
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      resolve(voices);
+      return;
+    }
+    // Most browsers fire voiceschanged once the list is ready.
+    window.speechSynthesis.addEventListener(
+      'voiceschanged',
+      () => resolve(window.speechSynthesis.getVoices()),
+      { once: true }
+    );
+    // Fallback for browsers (e.g. some iOS versions) that never fire the event.
+    setTimeout(() => resolve(window.speechSynthesis.getVoices()), 2000);
   });
-
-  ttsInstance = await loadingPromise;
-  loadingPromise = null;
-  return ttsInstance;
 }
 
-export function getTTSInstance(): KokoroTTS | null {
-  return ttsInstance;
+/** Score a voice by likely quality (higher = better). */
+function scoreVoice(voice: SpeechSynthesisVoice): number {
+  const name = voice.name.toLowerCase();
+  let score = 0;
+  if (name.includes('neural')) score += 100;
+  if (name.includes('wavenet')) score += 80;
+  if (name.includes('enhanced') || name.includes('premium')) score += 60;
+  if (name.includes('natural')) score += 40;
+  if (name.includes('compact')) score -= 20; // Lower-quality variant
+  return score;
 }
 
-export function isModelLoaded(): boolean {
-  return ttsInstance !== null;
+/**
+ * Return the best available voice for a given BCP-47 language tag.
+ * Falls back to prefix match (e.g., 'pt-BR' → 'pt').
+ */
+export function getBestVoiceForLang(
+  voices: SpeechSynthesisVoice[],
+  lang: string
+): SpeechSynthesisVoice | null {
+  const langLower = lang.toLowerCase();
+  let matches = voices.filter((v) => v.lang.toLowerCase() === langLower);
+
+  if (matches.length === 0) {
+    const prefix = langLower.split('-')[0];
+    matches = voices.filter((v) => v.lang.toLowerCase().startsWith(prefix));
+  }
+
+  if (matches.length === 0) return null;
+  return matches.sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
 }
 
-export function getAvailableVoices(tts: KokoroTTS): TTSVoice[] {
-  const voices = tts.voices;
-  return Object.entries(voices).map(([id, info]) => ({
-    id,
-    name: info.name,
-    language: info.language,
-    gender: info.gender,
-  }));
-}
-
-export async function generateAudioForText(
-  tts: KokoroTTS,
-  text: string,
-  voice: string = 'af_heart',
-  speed: number = 1
-): Promise<Float32Array> {
-  const audio = await tts.generate(text, { voice: voice as 'af_heart', speed });
-  // RawAudio has audio_data property with Float32Array
-  return audio.audio as unknown as Float32Array;
-}
-
-export function createAudioFromFloat32(samples: Float32Array, sampleRate: number = 24000): AudioBuffer {
-  const audioCtx = new AudioContext({ sampleRate });
-  const buffer = audioCtx.createBuffer(1, samples.length, sampleRate);
-  buffer.copyToChannel(samples, 0);
-  return buffer;
-}
-
-const CHUNK_SIZE = 500; // characters per chunk
-
-export function splitTextIntoChunks(text: string): string[] {
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+/**
+ * Split text into sentence-sized chunks so each Web Speech utterance
+ * is short. This avoids the Chrome Android ~15-second speech bug and
+ * produces natural pauses at sentence boundaries.
+ */
+export function splitIntoSentences(text: string): string[] {
   const chunks: string[] = [];
   let current = '';
 
-  for (const sentence of sentences) {
-    if (current.length + sentence.length > CHUNK_SIZE && current.length > 0) {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    current += ch;
+
+    const isEndPunct =
+      ch === '.' || ch === '!' || ch === '?' || ch === '…';
+    const nextChar = text[i + 1];
+    const afterSpace =
+      nextChar === undefined || nextChar === ' ' || nextChar === '\n';
+
+    if (isEndPunct && afterSpace && current.trim().length > 0) {
       chunks.push(current.trim());
-      current = sentence;
-    } else {
-      current += sentence;
+      current = '';
+    } else if (ch === '\n' && current.trim().length > 30) {
+      // Long paragraph break also counts as a chunk boundary.
+      chunks.push(current.trim());
+      current = '';
     }
   }
-  if (current.trim()) {
+
+  if (current.trim().length > 0) {
     chunks.push(current.trim());
   }
 
-  return chunks;
+  return chunks.filter((s) => s.length > 0);
 }
